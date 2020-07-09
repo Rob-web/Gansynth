@@ -66,10 +66,10 @@ def main(unused_argv):
         notes['end_times'][-1],
         secs_per_instrument=FLAGS.secs_per_instrument)
 
-    # Get latent vectors for each note                           # 得到每个音符，此时的音符是由midi和潜向量所组成 z_notes
+    # Get latent vectors for each note                           # 得到每个音符所对应的潜向量，称为z_notes
     z_notes = gu.get_z_notes(notes['start_times'], z_instruments, t_instruments)
 
-    # Generate audio for each note                   # 由midi和潜向量组成音符 z_notes 创造出音频 audio_notes
+    # Generate audio for each note                   # 由midi和潜向量创造出音频 audio_notes
     print('Generating {} samples...'.format(len(z_notes)))
     audio_notes = model.generate_samples_from_z(z_notes, notes['pitches'])
 
