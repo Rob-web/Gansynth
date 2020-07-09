@@ -47,7 +47,7 @@ def main(unused_argv):
 
   # Load the model
   flags = lib_flags.Flags({'batch_size_schedule': [FLAGS.batch_size]})   
-  model = lib_model.Model.load_from_path(FLAGS.ckpt_dir, flags)   #ckpt应该是输入音频的路径
+  model = lib_model.Model.load_from_path(FLAGS.ckpt_dir, flags)   # 载入在gansynth_train中已经训练好的模型
 
   # Make an output directory if it doesn't exist    #制造一个输出音频的路径
   output_dir = util.expand_path(FLAGS.output_dir)            
