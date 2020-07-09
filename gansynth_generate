@@ -1,0 +1,101 @@
+
+
+# Lint as: python3
+r"""Generate samples with a pretrained GANSynth model.
+To use a config of hyperparameters and manual hparams:
+>>> python magenta/models/gansynth/generate.py \
+>>> --ckpt_dir=/path/to/ckpt/dir --output_dir=/path/to/output/dir \
+>>> --midi_file=/path/to/file.mid
+If a MIDI file is specified, notes are synthesized with interpolation between
+latent vectors in time. If no MIDI file is given, a random batch of notes is
+synthesized.
+"""
+
+import os
+
+import absl.flags
+from magenta.models.gansynth.lib import flags as lib_flags
+from magenta.models.gansynth.lib import generate_util as gu
+from magenta.models.gansynth.lib import model as lib_model
+from magenta.models.gansynth.lib import util
+import tensorflow.compat.v1 as tf
+
+
+#flag函数：用于支持接受命令行传递参数
+absl.flags.DEFINE_string('ckpt_dir',
+                         '/tmp/gansynth/acoustic_only',
+                         'Path to the base directory of pretrained checkpoints.'
+                         'The base directory should contain many '
+                         '"stage_000*" subdirectories.')
+absl.flags.DEFINE_string('output_dir',
+                         '/tmp/gansynth/samples',
+                         'Path to directory to save wave files.')
+absl.flags.DEFINE_string('midi_file',
+                         '',
+                         'Path to a MIDI file (.mid) to synthesize.')
+absl.flags.DEFINE_integer('batch_size', 8, 'Batch size for generation.')
+absl.flags.DEFINE_float('secs_per_instrument', 6.0,
+                        'In random interpolations, the seconds it takes to '
+                        'interpolate from one instrument to another.')
+
+FLAGS = absl.flags.FLAGS
+tf.logging.set_verbosity(tf.logging.INFO)
+
+
+def main(unused_argv):
+  absl.flags.FLAGS.alsologtostderr = True
+
+  # Load the model
+  flags = lib_flags.Flags({'batch_size_schedule': [FLAGS.batch_size]})   
+  model = lib_model.Model.load_from_path(FLAGS.ckpt_dir, flags)   #ckpt应该是输入音频的路径
+
+  # Make an output directory if it doesn't exist    #制造一个输出音频的路径
+  output_dir = util.expand_path(FLAGS.output_dir)            
+  if not tf.gfile.Exists(output_dir):
+    tf.gfile.MakeDirs(output_dir)
+
+  if FLAGS.midi_file:
+    # If a MIDI file is provided, synthesize interpolations across the clip
+    # 如果有midi文件，那么音符将与潜向量进行插值合成
+    
+    unused_ns, notes = gu.load_midi(FLAGS.midi_file)      # load_midi函数：引入midi文件，并将其转换为音符notes     
+
+    # Distribute latent vectors linearly in time
+    z_instruments, t_instruments = gu.get_random_instruments(      # get_random_instruments函数：得到时间上均匀分布的随机潜在向量
+        model,
+        notes['end_times'][-1],
+        secs_per_instrument=FLAGS.secs_per_instrument)
+
+    # Get latent vectors for each note                           # 得到每个音符，此时的音符是由midi和潜向量所组成 z_notes
+    z_notes = gu.get_z_notes(notes['start_times'], z_instruments, t_instruments)
+
+    # Generate audio for each note                   # 由midi和潜向量组成音符 z_notes 创造出音频 audio_notes
+    print('Generating {} samples...'.format(len(z_notes)))
+    audio_notes = model.generate_samples_from_z(z_notes, notes['pitches'])
+
+    # Make a single audio clip                        # 在音频 audio_notes 中取一个片段 clip
+    audio_clip = gu.combine_notes(audio_notes,
+                                  notes['start_times'],
+                                  notes['end_times'],
+                                  notes['velocities'])
+
+    # Write the wave files          # 把片段 clip 转换为wave格式进行保存在文件中
+    fname = os.path.join(output_dir, 'generated_clip.wav')    
+    gu.save_wav(audio_clip, fname)
+  else:
+    # Otherwise, just generate a batch of random sounds     
+    #如果没有midi文件，就直接使用潜向量生成音符，然后用音符创造音频，这里的音频用waves表示
+    waves = model.generate_samples(FLAGS.batch_size)           
+    # Write the wave files        # 把音频waves 转换为wave格式进行保存在文件中
+    for i in range(len(waves)):
+      fname = os.path.join(output_dir, 'generated_{}.wav'.format(i))  # 把
+      gu.save_wav(waves[i], fname)
+
+
+def console_entry_point():
+  tf.disable_v2_behavior()  # 不用管，只是跟import tf有关
+  tf.app.run(main)
+
+
+if __name__ == '__main__':
+  console_entry_point()
