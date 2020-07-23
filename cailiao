@@ -1,0 +1,82 @@
+#建立球形插值
+def slerp(p0, p1, t):
+
+  omega = np.arccos(np.dot(
+      np.squeeze(p0/np.linalg.norm(p0)), np.squeeze(p1/np.linalg.norm(p1))))
+  so = np.sin(omega)
+  return np.sin((1.0-t)*omega) / so * p0 + np.sin(t*omega)/so * p1
+
+
+
+
+def load_midi(midi_path, min_pitch=36, max_pitch=84):   
+
+ # 引入midi文件，并将其转换为一个序列音符notesequence，notes表示每一个音符，其中每个音符包含4个表示
+  midi_path = util.expand_path(midi_path)
+  ns = note_seq.midi_file_to_sequence_proto(midi_path)
+  pitches = np.array([n.pitch for n in ns.notes])
+  velocities = np.array([n.velocity for n in ns.notes])
+  start_times = np.array([n.start_time for n in ns.notes])
+  end_times = np.array([n.end_time for n in ns.notes])
+  valid = np.logical_and(pitches >= min_pitch, pitches <= max_pitch)     # 逻辑与门
+  notes = {'pitches': pitches[valid],
+           'velocities': velocities[valid],
+           'start_times': start_times[valid],
+           'end_times': end_times[valid]}
+  return ns, notes
+
+# 将音频片段clip输出成wave格式
+def save_wav(audio, fname, sr=16000):
+  wavfile.write(fname, sr, audio.astype('float32'))
+  print('Saved to {}'.format(fname))
+
+
+def main(unused_argv):
+  absl.flags.FLAGS.alsologtostderr = True
+
+  # Load the model
+  flags = lib_flags.Flags({'batch_size_schedule': [FLAGS.batch_size]})   
+  model = lib_model.Model.load_from_path(FLAGS.ckpt_dir, flags)   # 载入训练好的模型
+
+  # Make an output directory if it doesn't exist    #制造一个输出音频的路径
+  output_dir = util.expand_path(FLAGS.output_dir)            
+  if not tf.gfile.Exists(output_dir):
+    tf.gfile.MakeDirs(output_dir)
+
+  if FLAGS.midi_file:
+    # If a MIDI file is provided, synthesize interpolations across the clip
+    # 如果有midi文件，那么音符将与潜向量进行插值合成
+    
+    unused_ns, notes = gu.load_midi(FLAGS.midi_file)      # load_midi函数：引入midi文件，并将其转换为音符notes     
+
+    # Distribute latent vectors linearly in time
+    z_instruments, t_instruments = gu.get_random_instruments(      # get_random_instruments函数：得到时间上均匀分布的随机潜在向量
+        model,
+        notes['end_times'][-1],
+        secs_per_instrument=FLAGS.secs_per_instrument)
+
+    # Get latent vectors for each note                           # 得到midi文件中每个音符所对应的潜向量，称为 z_notes
+    z_notes = gu.get_z_notes(notes['start_times'], z_instruments, t_instruments)
+
+    # Generate audio for each note                   # 由midi音符和潜向量创造出音频 audio_notes
+    print('Generating {} samples...'.format(len(z_notes)))
+    audio_notes = model.generate_samples_from_z(z_notes, notes['pitches'])
+
+    # Make a single audio clip                        # 在音频 audio_notes 中取一个片段 clip
+    audio_clip = gu.combine_notes(audio_notes,
+                                  notes['start_times'],
+                                  notes['end_times'],
+                                  notes['velocities'])
+
+    # Write the wave files          # 把片段 clip 转换为wave格式进行保存在文件中
+    fname = os.path.join(output_dir, 'generated_clip.wav')    
+    gu.save_wav(audio_clip, fname)
+  else:
+    # Otherwise, just generate a batch of random sounds     
+    #如果没有midi文件，就直接使用潜向量生成音符
+    # 该generate_samples函数最终返回的是generate_samples_from_z（），即generate_samples函数生成的是音频 
+    waves = model.generate_samples(FLAGS.batch_size)              
+    # Write the wave files        # 把音频waves 转换为wave格式进行保存在文件中
+    for i in range(len(waves)):
+      fname = os.path.join(output_dir, 'generated_{}.wav'.format(i))  #
+      gu.save_wav(waves[i], fname)
