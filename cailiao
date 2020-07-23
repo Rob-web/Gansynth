@@ -80,3 +80,124 @@ def main(unused_argv):
     for i in range(len(waves)):
       fname = os.path.join(output_dir, 'generated_{}.wav'.format(i))  #
       gu.save_wav(waves[i], fname)
+
+
+def waves_to_stfts(self, waves):
+    """将wave转换为stft短时傅里叶形式
+
+    """
+    waves_padded = tf.pad(waves, [[0, 0], [self._pad_l, self._pad_r], [0, 0]])
+    stfts = tf.signal.stft(
+        waves_padded[:, :, 0],
+        frame_length=self._nfft,
+        frame_step=self._nhop,
+        fft_length=self._nfft,
+        pad_end=False)[:, :, :, tf.newaxis]
+    stfts = stfts[:, :, 1:] if self._discard_dc else stfts[:, :, :-1]
+    stft_shape = stfts.get_shape().as_list()[1:3]
+    if tuple(stft_shape) != tuple(self._spec_shape):
+      raise ValueError(
+          'Spectrogram returned the wrong shape {}, is not the same as the '
+          'constructor spec_shape {}.'.format(stft_shape, self._spec_shape))
+    return stfts
+    
+    
+ def stfts_to_waves(self, stfts):
+    """将stft短时傅里叶形式转换为wave
+ 
+    """
+    dc = 1 if self._discard_dc else 0
+    nyq = 1 - dc
+    stfts = tf.pad(stfts, [[0, 0], [0, 0], [dc, nyq], [0, 0]])
+    waves_resyn = tf.signal.inverse_stft(
+        stfts=stfts[:, :, :, 0],
+        frame_length=self._nfft,
+        frame_step=self._nhop,
+        fft_length=self._nfft,
+        window_fn=tf.signal.inverse_stft_window_fn(
+            frame_step=self._nhop))[:, :, tf.newaxis]
+    # Python does not allow rslice of -0
+    if self._pad_r == 0:
+      return waves_resyn[:, self._pad_l:]
+    else:
+      return waves_resyn[:, self._pad_l:-self._pad_r]
+      
+      
+  def stfts_to_specgrams(self, stfts):
+    """将stft短时傅里叶形式转换为声谱图形式
+
+    """
+    stfts = stfts[:, :, :, 0]
+
+    logmag = self._safe_log(tf.abs(stfts))
+
+    phase_angle = tf.angle(stfts)
+    if self._ifreq:
+      p = spectral_ops.instantaneous_frequency(phase_angle)
+    else:
+      p = phase_angle / np.pi
+
+    return tf.concat(
+        [logmag[:, :, :, tf.newaxis], p[:, :, :, tf.newaxis]], axis=-1)
+        
+        
+  def specgrams_to_stfts(self, specgrams):
+    """将声谱图形式转换为短时傅里叶形式
+
+    """
+    logmag = specgrams[:, :, :, 0]
+    p = specgrams[:, :, :, 1]
+
+    mag = tf.exp(logmag)
+
+    if self._ifreq:
+      phase_angle = tf.cumsum(p * np.pi, axis=-2)
+    else:
+      phase_angle = p * np.pi
+
+    return spectral_ops.polar2rect(mag, phase_angle)[:, :, :, tf.newaxis]
+    
+    
+    
+  def specgrams_to_melspecgrams(self, specgrams):
+    """将声谱图转换为梅尔频谱
+
+    """
+    if self._mel_downscale is None:
+      return specgrams
+
+    logmag = specgrams[:, :, :, 0]
+    p = specgrams[:, :, :, 1]
+
+    mag2 = tf.exp(2.0 * logmag)
+    phase_angle = tf.cumsum(p * np.pi, axis=-2)
+
+    l2mel = tf.to_float(self._linear_to_mel_matrix())
+    logmelmag2 = self._safe_log(tf.tensordot(mag2, l2mel, 1))
+    mel_phase_angle = tf.tensordot(phase_angle, l2mel, 1)
+    mel_p = spectral_ops.instantaneous_frequency(mel_phase_angle)
+
+    return tf.concat(
+        [logmelmag2[:, :, :, tf.newaxis], mel_p[:, :, :, tf.newaxis]], axis=-1)
+        
+        
+        
+  def melspecgrams_to_specgrams(self, melspecgrams):
+    """将梅尔频谱转换成声谱图
+
+    """
+    if self._mel_downscale is None:
+      return melspecgrams
+
+    logmelmag2 = melspecgrams[:, :, :, 0]
+    mel_p = melspecgrams[:, :, :, 1]
+
+    mel2l = tf.to_float(self._mel_to_linear_matrix())
+    mag2 = tf.tensordot(tf.exp(logmelmag2), mel2l, 1)
+    logmag = 0.5 * self._safe_log(mag2)
+    mel_phase_angle = tf.cumsum(mel_p * np.pi, axis=-2)
+    phase_angle = tf.tensordot(mel_phase_angle, mel2l, 1)
+    p = spectral_ops.instantaneous_frequency(phase_angle)
+
+    return tf.concat(
+        [logmag[:, :, :, tf.newaxis], p[:, :, :, tf.newaxis]], axis=-1)
