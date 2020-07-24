@@ -102,7 +102,7 @@ def waves_to_stfts(self, waves):
     return stfts
     
     
- def stfts_to_waves(self, stfts):
+def stfts_to_waves(self, stfts):
     """将stft短时傅里叶形式转换为wave
  
     """
@@ -123,7 +123,7 @@ def waves_to_stfts(self, waves):
       return waves_resyn[:, self._pad_l:-self._pad_r]
       
       
-  def stfts_to_specgrams(self, stfts):
+def stfts_to_specgrams(self, stfts):
     """将stft短时傅里叶形式转换为声谱图形式
 
     """
@@ -141,7 +141,7 @@ def waves_to_stfts(self, waves):
         [logmag[:, :, :, tf.newaxis], p[:, :, :, tf.newaxis]], axis=-1)
         
         
-  def specgrams_to_stfts(self, specgrams):
+def specgrams_to_stfts(self, specgrams):
     """将声谱图形式转换为短时傅里叶形式
 
     """
@@ -159,7 +159,7 @@ def waves_to_stfts(self, waves):
     
     
     
-  def specgrams_to_melspecgrams(self, specgrams):
+def specgrams_to_melspecgrams(self, specgrams):
     """将声谱图转换为梅尔频谱
 
     """
@@ -201,3 +201,132 @@ def waves_to_stfts(self, waves):
 
     return tf.concat(
         [logmag[:, :, :, tf.newaxis], p[:, :, :, tf.newaxis]], axis=-1)
+
+
+def provide_data(self, batch_size):
+    """返回一个批次的data和对应的label，即real_images, real_one_hot_labels = (audio, labels)。这里的数据是nsynth数据集，即真实的数据集"""
+    with tf.name_scope('inputs'):
+      with tf.device('/cpu:0'):
+        dataset = self.dataset.provide_dataset()
+        dataset = dataset.shuffle(buffer_size=1000)
+        dataset = dataset.map(self._map_fn, num_parallel_calls=4)
+        dataset = dataset.batch(batch_size)
+        dataset = dataset.prefetch(1)
+
+        iterator = dataset.make_initializable_iterator()
+        tf.add_to_collection(tf.GraphKeys.TABLE_INITIALIZERS,
+                             iterator.initializer)
+
+        data, one_hot_labels = iterator.get_next()
+        data.set_shape([batch_size, None, None, None])
+        one_hot_labels.set_shape([batch_size, None])
+        return data, one_hot_labels
+        
+def provide_one_hot_labels(self, batch_size):
+    """返回gen的one_hot_label."""
+    pitch_counts = self.get_pitch_counts()
+    pitches = sorted(pitch_counts.keys())
+    counts = [pitch_counts[p] for p in pitches]
+    indices = tf.reshape(
+        tf.multinomial(tf.log([tf.to_float(counts)]), batch_size), [batch_size])
+    one_hot_labels = tf.one_hot(indices, depth=len(pitches))
+    return one_hot_labels
+    
+    
+def get_stage_ids(**kwargs):
+  """Returns a list of stage ids.
+  Args:
+    **kwargs: A dictionary of
+        'train_root_dir': A string of root directory of training logs.
+        'num_resolutions': An integer of number of progressive resolutions.
+  """
+  train_sub_dirs = [
+      sub_dir for sub_dir in tf.gfile.ListDirectory(kwargs['train_root_dir'])
+      if sub_dir.startswith('stage_')
+  ]
+
+  # If fresh start, start with start_stage_id = 0
+  # If has been trained for n = len(train_sub_dirs) stages, start with the last
+  # stage, i.e. start_stage_id = n - 1.
+  start_stage_id = max(0, len(train_sub_dirs) - 1)
+
+  return list(range(start_stage_id, get_total_num_stages(**kwargs)))
+  
+  
+  
+  
+def get_stage_ids(**kwargs):
+  """得到一个list的stage
+  """
+  train_sub_dirs = [
+      sub_dir for sub_dir in tf.gfile.ListDirectory(kwargs['train_root_dir'])
+      if sub_dir.startswith('stage_')
+  ]
+
+  # If fresh start, start with start_stage_id = 0
+  # If has been trained for n = len(train_sub_dirs) stages, start with the last
+  # stage, i.e. start_stage_id = n - 1.
+  start_stage_id = max(0, len(train_sub_dirs) - 1)
+
+  return list(range(start_stage_id, get_total_num_stages(**kwargs)))
+  
+  
+  
+def get_batch_size(stage_id, **kwargs):
+  """得到每个stage中的batch size值
+  我们希望batch_size的长度 == 分辨率的大小，因此每一个stage对应着一个分辨率也就是对应着一个batch size
+  """
+  batch_size_schedule = kwargs['batch_size_schedule']
+  num_resolutions = kwargs['num_resolutions']
+  if len(batch_size_schedule) < num_resolutions:
+    batch_size_schedule = (
+        [batch_size_schedule[0]] * (num_resolutions - len(batch_size_schedule))
+        + batch_size_schedule)
+
+  return int(batch_size_schedule[(stage_id + 1) // 2])
+
+
+def train(model, **kwargs):
+  """训练第stage_id个progressive GAN
+
+  """
+  logging.info('stage_id=%d, num_blocks=%d, num_images=%d', model.stage_id,
+               model.num_blocks, model.num_images)
+
+  scaffold = make_scaffold(model.stage_id, model.optimizer_var_list, **kwargs)
+
+  logdir = make_train_sub_dir(model.stage_id, **kwargs)
+  print('starting training, logdir: {}'.format(logdir))
+  hooks = []
+  if model.stage_train_time_limit is None:
+    hooks.append(tf.train.StopAtStepHook(last_step=model.num_images))
+  hooks.append(tf.train.LoggingTensorHook(
+      [make_status_message(model)], every_n_iter=1))
+  hooks.append(TrainTimeHook(model.train_time, model.stage_train_time_limit))
+  if kwargs['debug_hook']:
+    hooks.append(ProganDebugHook())
+  tfgan.gan_train(
+      model.gan_train_ops,
+      logdir=logdir,
+      get_hooks_fn=tfgan.get_sequential_train_hooks(tfgan.GANTrainSteps(1, 1)),
+      hooks=hooks,
+      master=kwargs['master'],
+      is_chief=(kwargs['task'] == 0),
+      scaffold=scaffold,
+      save_checkpoint_secs=600,
+      save_summaries_steps=(kwargs['save_summaries_num_images']))
+
+  
+def define_train_ops(gan_model, gan_loss, **kwargs):
+  """定义progressive GAN的训练优化器.
+ 
+  """
+  with tf.variable_scope('progressive_gan_train_ops') as var_scope:
+    beta1, beta2 = kwargs['adam_beta1'], kwargs['adam_beta2']
+    gen_opt = tf.train.AdamOptimizer(kwargs['generator_learning_rate'], beta1,
+                                     beta2)
+    dis_opt = tf.train.AdamOptimizer(kwargs['discriminator_learning_rate'],
+                                     beta1, beta2)
+    gan_train_ops = tfgan.gan_train_ops(gan_model, gan_loss, gen_opt, dis_opt)
+  return gan_train_ops, tf.get_collection(
+      tf.GraphKeys.GLOBAL_VARIABLES, scope=var_scope.name)
