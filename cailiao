@@ -68,7 +68,7 @@ def main(unused_argv):
                                   notes['end_times'],
                                   notes['velocities'])
 
-    # Write the wave files          # 把片段 clip 转换为wave格式进行保存在文件中
+    # Write the wave files          # 把片段 clip 进行保存在文件中
     fname = os.path.join(output_dir, 'generated_clip.wav')    
     gu.save_wav(audio_clip, fname)
   else:
@@ -76,7 +76,7 @@ def main(unused_argv):
     #如果没有midi文件，就直接使用潜向量生成音符
     # 该generate_samples函数最终返回的是generate_samples_from_z（），即generate_samples函数生成的是音频 
     waves = model.generate_samples(FLAGS.batch_size)              
-    # Write the wave files        # 把音频waves 转换为wave格式进行保存在文件中
+    # Write the wave files        # 进行保存在文件中
     for i in range(len(waves)):
       fname = os.path.join(output_dir, 'generated_{}.wav'.format(i))  #
       gu.save_wav(waves[i], fname)
